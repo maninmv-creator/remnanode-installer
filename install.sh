@@ -19,12 +19,12 @@ if ! locale charmap 2>/dev/null | grep -qi 'utf-\?8'; then
 fi
 
 # ================== НАСТРОЙКИ РЕПОЗИТОРИЯ (ЗАМЕНИТЕ) ==================
-GITHUB_USER="MonopoD123"      # ваш логин на GitHub
+GITHUB_USER="maninmv-creator"      # ваш логин на GitHub
 GITHUB_REPO="remnanode-installer"       # имя репозитория
 GITHUB_BRANCH="main"                    # ветка
 # Архивы сайтов-заглушек в корне репозитория
 SITE_TEMPLATES=("radio.zip" "eggs.zip" "tube.zip")
-SITE_TEMPLATE_TITLES=("Радио" "Игра «Курятник» (лови яйца, LCD-стиль)" "Клипотека — топ видео с YouTube")
+SITE_TEMPLATE_TITLES=("Радио — КВН от дяди Миши" "Игра «Курятник» (лови яйца, LCD-стиль)" "Клипотека — топ видео с YouTube")
 # ======================================================================
 
 REPO_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
