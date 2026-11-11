@@ -2621,6 +2621,98 @@ uninstall_menu() {
 }
 
 # ============================ RKN-GUARD ================================
+# Сохраняем правила и для выключенного UFW: его может включить rkn-guard.
+prepare_rkn_guard_ports() {
+    local hosts site ssh_ports="" session_port port group rule added
+    local -a ports=()
+    local -A allowed=()
+    local -a ssh_profiles=()
+
+    load_state
+    site="80 443"
+    if [[ "$SITE_MODE" == "selfsteal" && "$SITE_PUBLIC443" != "1" ]]; then
+        site="80"
+    fi
+    read -r _ _ _ session_port <<< "${SSH_CONNECTION:-}"
+    ssh_ports="$(ss -H -ltnp 2>/dev/null | awk '/"sshd"/ || /"sshd-session"/ {
+        sub(/^.*:/, "", $4); print $4
+    }' | sort -nu | paste -sd ' ' -)"
+    if [[ -z "$ssh_ports" ]] && command -v sshd >/dev/null 2>&1; then
+        ssh_ports="$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2}' | paste -sd ' ' -)"
+    fi
+
+    ask hosts "Порты Hosts из панели (TCP, через пробел; «-» если Hosts нет)" "$REALITY_PORTS"
+    ask site "Публичные порты сайта-заглушки (TCP, через пробел; «-» если сайта нет)" "$site"
+    ask ssh_ports "Порты SSH (TCP, через пробел)" "${ssh_ports:-${session_port:-22}}"
+    if [[ -z "$hosts" || -z "$site" || ! "$ssh_ports" =~ [0-9] ]]; then
+        err "Укажите порты Hosts, сайта и SSH. Для отсутствующего Hosts или сайта введите «-»."
+        return 1
+    fi
+
+    # SSH обрабатываем первым и сохраняем порт текущего подключения.
+    for group in "$ssh_ports ${session_port}" "$hosts" "$site"; do
+        [[ "$group" == "-" ]] && continue
+        if [[ ! "$group" =~ ^[0-9[:blank:]]+$ || ! "$group" =~ [0-9] ]]; then
+            err "Некорректный список портов: $group"
+            return 1
+        fi
+        local -a group_ports=()
+        read -ra group_ports <<< "$group"
+        for port in "${group_ports[@]}"; do
+            if [[ ! "$port" =~ ^[0-9]{1,5}$ ]] || (( 10#$port < 1 || 10#$port > 65535 )); then
+                err "Некорректный TCP-порт: $port"
+                return 1
+            fi
+            port=$((10#$port))
+            if [[ ! -v 'allowed[$port]' ]]; then
+                ports+=("$port")
+                allowed[$port]="Remnanode"
+                [[ "$group" == "$ssh_ports ${session_port}" ]] && allowed[$port]="ssh"
+            fi
+        done
+    done
+
+    confirm "Разрешить входящие TCP-порты ${ports[*]} в UFW и запустить установку rkn-guard?" n || return 2
+    if ! command -v ufw >/dev/null 2>&1; then
+        info "Устанавливаю UFW..."
+        if ! apt-get update -qq || ! apt_install ufw; then
+            err "Не удалось установить UFW"
+            return 1
+        fi
+    fi
+
+    for port in "${ports[@]}"; do
+        rule="${port}/tcp"
+        if [[ "${allowed[$port]}" == "ssh" ]]; then
+            # Имя профиля видно в «ufw show added», который проверяет rkn-guard.
+            rule="Remnanode-OpenSSH-${port}"
+            if ! printf '[%s]\ntitle=Remnanode SSH\ndescription=OpenSSH TCP port %s\nports=%s/tcp\n' \
+                "$rule" "$port" "$port" >"/etc/ufw/applications.d/${rule}"; then
+                err "Не удалось записать профиль UFW для SSH на порту ${port}"
+                return 1
+            fi
+            ssh_profiles+=("$rule")
+        fi
+        if ! ufw prepend allow "$rule"; then
+            err "Не удалось добавить правило UFW для ${port}/tcp"
+            return 1
+        fi
+    done
+
+    if ! added="$(LC_ALL=C ufw show added)"; then
+        err "Не удалось проверить сохранённые правила UFW"
+        return 1
+    fi
+    for rule in "${ssh_profiles[@]}"; do
+        if ! grep -Fwq -- "$rule" <<< "$added"; then
+            err "Правило SSH ${rule} отсутствует в «ufw show added»"
+            return 1
+        fi
+    done
+    ok "Правила UFW добавлены для TCP-портов: ${ports[*]}"
+}
+
+
 # Скрипт сначала скачивается во временный файл, а не передаётся через
 # «curl | bash»: так у него остаётся терминал для вопросов, а при обрыве
 # загрузки не выполнится недокачанный кусок.
@@ -2629,7 +2721,10 @@ run_rkn_guard() {
     echo -e "${BOLD}rkn-guard${NC} — сторонний скрипт: ${RKN_GUARD_URL}"
     warn "Он будет запущен от root. Запускайте, только если доверяете автору репозитория."
     line
-    confirm "Запустить установку rkn-guard?" n || return 0
+    local ports_rc=0
+    prepare_rkn_guard_ports || ports_rc=$?
+    (( ports_rc == 2 )) && return 0
+    (( ports_rc == 0 )) || return 1
 
     local tmp
     tmp="$(mktemp -d)"
