@@ -3,7 +3,7 @@
 #  Remnawave Node Installer
 #  1) Установка ноды Remnawave (по https://docs.rw/install/remnawave-node)
 #  2) Установка ноды + сайт-заглушка на nginx с SSL (Let's Encrypt)
-#     (на выбор: «Радио», игра «Курятник», «Клипотека» или свой zip)
+#     (на выбор: «Радио — КВН от дяди Миши», «Радио — оригинальный шаблон», игра «Курятник», «Клипотека» или свой zip)
 #  3) Selfsteal Reality: сайт-заглушка + готовый Config Profile для панели
 #     со случайными портами (каждый запуск — новый порт для Hosts)
 #  4) Установка / обновление ядра Xray-core на ноде
@@ -23,8 +23,8 @@ GITHUB_USER="maninmv-creator"      # ваш логин на GitHub
 GITHUB_REPO="remnanode-installer"       # имя репозитория
 GITHUB_BRANCH="main"                    # ветка
 # Архивы сайтов-заглушек в корне репозитория
-SITE_TEMPLATES=("radio.zip" "eggs.zip" "tube.zip")
-SITE_TEMPLATE_TITLES=("Радио — КВН от дяди Миши" "Игра «Курятник» (лови яйца, LCD-стиль)" "Клипотека — топ видео с YouTube")
+SITE_TEMPLATES=("radio.zip" "eggs.zip" "tube.zip" "radio-original.zip")
+SITE_TEMPLATE_TITLES=("Радио — КВН от дяди Миши" "Игра «Курятник» (лови яйца, LCD-стиль)" "Клипотека — топ видео с YouTube" "Радио — оригинальный шаблон")
 # ======================================================================
 
 REPO_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
@@ -2797,6 +2797,11 @@ init_server_info() {
 main() {
     check_root
     check_os
+    info "Обновляю списки пакетов и установленные пакеты..."
+    if ! (apt update && apt upgrade -y); then
+        err "Не удалось обновить пакеты"
+        return 1
+    fi
     load_state
     init_server_info
     init_banners
