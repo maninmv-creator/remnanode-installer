@@ -51,6 +51,39 @@ if [[ -f $STATE/domains ]] && [[ $(cat "$STATE/domains") != "$DOMAIN $CDN_DOMAIN
     fail 'Повторный запуск допустим только с теми же двумя доменами.'
 fi
 
+SITE_ZIP_URL=${SITE_ZIP_URL:-}
+if [[ -z $SITE_ZIP_URL ]]; then
+    SITE_TEMPLATES=(radio.zip eggs.zip tube.zip radio-original.zip)
+    printf '%s\n' 'Сайт-заглушка для Yandex CDN:' \
+        '  0) Простая страница ok (по умолчанию)' \
+        '  1) Радио — КВН от дяди Миши' \
+        '  2) Игра «Курятник»' \
+        '  3) Клипотека' \
+        '  4) Радио — оригинальный шаблон' \
+        '  r) Случайный шаблон' \
+        '  u) Свой ZIP по ссылке'
+    while true; do
+        read -r -p 'Выбор [0]: ' SITE_CHOICE
+        case ${SITE_CHOICE,,} in
+            ''|0) break ;;
+            [1-4]) SITE_ARCHIVE=${SITE_TEMPLATES[SITE_CHOICE-1]}; break ;;
+            r) SITE_ARCHIVE=${SITE_TEMPLATES[RANDOM % ${#SITE_TEMPLATES[@]}]}; break ;;
+            u)
+                read -r -p 'Прямая ссылка на ZIP (https://…): ' SITE_ZIP_URL
+                [[ -n $SITE_ZIP_URL ]] || fail 'Укажи ссылку на ZIP.'
+                break
+                ;;
+            *) printf '%s\n' 'Выбери 0–4, r или u.' ;;
+        esac
+    done
+    if [[ -n ${SITE_ARCHIVE:-} ]]; then
+        SITE_ZIP_URL="https://raw.githubusercontent.com/maninmv-creator/remnanode-installer/78f7c8b553eba74ef4ada83e5580d8838894675d/$SITE_ARCHIVE"
+    fi
+fi
+if [[ -n $SITE_ZIP_URL && $SITE_ZIP_URL != https://?* ]]; then
+    fail 'Ссылка на ZIP должна начинаться с https://.'
+fi
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y ca-certificates certbot curl python3 dnsutils ufw cron
@@ -381,26 +414,68 @@ server {
 
     location / {
         root /usr/share/nginx/html;
-        index index.html;
+        index index.html index.htm;
         add_header Cache-Control "public, max-age=86400" always;
     }
 }
 EOF
 
-cat > html/index.html <<'EOF'
-ok
-EOF
+deploy_site() (
+    staging=$(mktemp -d .site.XXXXXXXX)
+    trap 'rm -rf -- "$staging"' EXIT
+    mkdir "$staging/html"
+    if [[ -z $SITE_ZIP_URL ]]; then
+        printf 'ok\n' > "$staging/html/index.html"
+    else
+        printf '%s\n' 'Скачиваю ZIP сайта-заглушки…'
+        curl --disable -fsSL --globoff --proto '=https' --proto-redir '=https' \
+            --retry 3 --connect-timeout 10 --max-time 120 \
+            -o "$staging/site.zip" -- "$SITE_ZIP_URL" || fail 'Не удалось скачать ZIP.'
+        python3 - "$staging" <<'PYSITE' || fail 'Не удалось подготовить сайт из ZIP.'
+import shutil
+import sys
+from pathlib import Path
+from zipfile import ZipFile
 
+staging = Path(sys.argv[1])
+extracted = staging / "extracted"
+with ZipFile(staging / "site.zip") as archive:
+    archive.extractall(extracted)
 
-chmod 755 /opt/cdn-nginx/html
-chmod 644 /opt/cdn-nginx/html/index.html
+indexes = [
+    path for path in extracted.rglob("*")
+    if path.is_file() and path.name in {"index.html", "index.htm"}
+    and "__MACOSX" not in path.relative_to(extracted).parts
+]
+if not indexes:
+    raise SystemExit("В ZIP нет index.html или index.htm.")
+index = min(indexes, key=lambda path: (len(path.parts), path.as_posix()))
+shutil.copytree(
+    index.parent, staging / "html", dirs_exist_ok=True,
+    ignore=shutil.ignore_patterns("__MACOSX"),
+)
+PYSITE
+    fi
+
+    find "$staging/html" -type d -exec chmod 755 {} +
+    find "$staging/html" -type f -exec chmod 644 {} +
+    mv -T -- html "$staging/previous"
+    if ! mv -T -- "$staging/html" html; then
+        if ! mv -T -- "$staging/previous" html; then
+            trap - EXIT
+            fail "Не удалось восстановить прежний сайт. Он сохранён в $PWD/$staging/previous."
+        fi
+        fail 'Не удалось заменить сайт.'
+    fi
+)
+deploy_site
 docker compose config --quiet
 docker compose run --rm --no-deps cdn-nginx nginx -t
 docker compose up -d --force-recreate
 docker exec cdn-nginx nginx -t
 systemctl enable --now cron certbot.timer
 curl -fsS --retry 5 --retry-connrefused --max-time 10 \
-    --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/"
+    --resolve "$DOMAIN:443:127.0.0.1" -o /dev/null "https://$DOMAIN/"
 
 # Защита API ноды. Сначала разрешаем SSH на порту текущего подключения.
 ufw allow "$SSH_PORT/tcp"
